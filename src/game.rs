@@ -113,13 +113,6 @@ pub fn round<F: Strategy, S: Strategy>(
     (first_points, second_points)
 }
 
-pub struct TournamentScore<'a, S: Strategy> {
-    strategy: &'a S,
-    score: f64,
-    avg_score: f64,
-    norm_score: f64,
-}
-
 /// Play a round-robin tournament between strategies
 ///
 /// Arguments:
@@ -135,45 +128,79 @@ pub fn tournament<'a, S: Strategy>(
     strategies: &'a mut Vec<S>,
     payoff: &'a Payoff,
     num_games: usize,
-) -> Result<Vec<TournamentScore<'a, S>>, &'static str> {
+) -> Result<Vec<f64>, &'static str> {
     let n = strategies.len();
     if n < 2 {
         return Err("must have at least two strategies");
     }
 
-    let num_rounds = ((n - 1) * num_games) as f64;
-    let mut scores: Vec<TournamentScore<S>> = strategies
-        .iter()
-        .map(|s| TournamentScore {
-            strategy: s,
-            score: 0.0,
-            avg_score: 0.0,
-            norm_score: 0.0,
-        })
-        .collect();
-
-    // Round-robin tournament
-    let mut total_score = 0.0;
+    let mut scores = vec![0.0; n];
     for i in 0..n {
         for j in i + 1..n {
-            let mut strat_i = strategies[i];
-            let mut strat_j = strategies[j];
-            let (score_i, score_j) = round(&mut strat_i, &mut strat_j, payoff, num_games);
-            total_score += score_i + score_j;
+            let mut si = strategies[i];
+            let mut sj = strategies[j];
+            let (score_i, score_j) = round(&mut si, &mut sj, payoff, num_games);
 
-            scores[i].score += score_i;
-            scores[i].avg_score += score_i / num_rounds;
-            scores[j].score += score_j;
-            scores[j].avg_score += score_j / num_rounds;
+            scores[i] += score_i;
+            scores[j] += score_j;
         }
-    }
-
-    for i in 0..n {
-        scores[i].norm_score = scores[i].score / total_score;
     }
 
     Ok(scores)
 }
+
+// pub fn tournament<'a, S: Strategy>(
+//     strategies: &'a mut Vec<S>,
+//     payoff: &'a Payoff,
+//     num_games: usize,
+// ) -> Result<Vec<TournamentScore<'a, S>>, &'static str> {
+//     let n = strategies.len();
+//     if n < 2 {
+//         return Err("must have at least two strategies");
+//     }
+
+//     let num_rounds = ((n - 1) * num_games) as f64;
+//     let mut scores: Vec<TournamentScore<S>> = strategies
+//         .iter()
+//         .map(|s| TournamentScore {
+//             strategy: s,
+//             score: 0.0,
+//             avg_score: 0.0,
+//             norm_score: 0.0,
+//             cum_norm_score: 0.0,
+//         })
+//         .collect();
+
+//     // Round-robin tournament
+//     let mut total_score = 0.0;
+//     for i in 0..n {
+//         for j in i + 1..n {
+//             let mut strat_i = strategies[i];
+//             let mut strat_j = strategies[j];
+//             let (score_i, score_j) = round(&mut strat_i, &mut strat_j, payoff, num_games);
+//             total_score += score_i + score_j;
+
+//             scores[i].score += score_i;
+//             scores[i].avg_score += score_i / num_rounds;
+//             scores[j].score += score_j;
+//             scores[j].avg_score += score_j / num_rounds;
+//         }
+//     }
+
+//     // Sort the results
+//     scores.sort_by(|a, b| a.score.partial_cmp(&b.score).unwrap());
+
+//     // Calculate the normalized scores
+//     let mut cum_norm_score = 0.0;
+//     for i in 0..n {
+//         let norm_score = scores[i].score / total_score;
+//         cum_norm_score += norm_score;
+//         scores[i].norm_score = norm_score;
+//         scores[i].cum_norm_score = cum_norm_score;
+//     }
+
+//     Ok(scores)
+// }
 
 // Some classic strategies ...
 
@@ -317,12 +344,9 @@ mod tests {
         let payoff = Payoff::default();
 
         let results = tournament(&mut strats, &payoff, 100)?;
-        assert_eq!(results[0].score, 2.0 * 100.0 * payoff.reward);
-        assert_eq!(results[1].score, 2.0 * 100.0 * payoff.reward);
-        assert_eq!(results[2].score, 2.0 * 100.0 * payoff.reward);
-
-        assert_eq!(results[0].avg_score, payoff.reward);
-        assert_eq!(results[0].norm_score, 1.0 / 3.0);
+        assert_eq!(results[0], 2.0 * 100.0 * payoff.reward);
+        assert_eq!(results[1], 2.0 * 100.0 * payoff.reward);
+        assert_eq!(results[2], 2.0 * 100.0 * payoff.reward);
         Ok(())
     }
 }

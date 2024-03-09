@@ -1,8 +1,9 @@
 //! Functions and Structs implementing a Prisoner's Dilemma strategy that
 //! can be trained by a Genetic Algorithm.
 
-use crate::game::{Choice, Payoff, Strategy};
+use crate::game::{tournament, Choice, Payoff, Strategy};
 use rand::RngCore;
+use std::cmp::Ordering;
 
 /// A Prisoner's Dilemma strategy that can be trained by GA.
 ///
@@ -26,7 +27,7 @@ use rand::RngCore;
 /// The prior and strategy array together form the *chromosome* for the
 /// genetic algorithm.
 ///
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, PartialOrd)]
 pub struct GeneticStrategy {
     prior: u8,
     strategy: [u8; 32],
@@ -101,16 +102,136 @@ fn lookup(index: u8, data: &[u8; 32]) -> u8 {
     (byte << (index % 8)) & 0x80
 }
 
+fn cross(first: u8, second: u8) -> u8 {
+    let mask: u8 = rand::random();
+    (first & mask) | (second & !mask)
+}
+
+fn mutate(byte: u8) -> u8 {
+    let choice: u8 = rand::random();
+    let mask = match choice % 8 {
+        0 => 0b0000_0001,
+        1 => 0b0000_0010,
+        2 => 0b0000_0100,
+        3 => 0b0000_1000,
+        4 => 0b0001_0000,
+        5 => 0b0010_0000,
+        6 => 0b0100_0000,
+        7 => 0b1000_0000,
+        _ => 0,
+    };
+
+    byte ^ mask
+}
+
+fn mate(first: &GeneticStrategy, second: &GeneticStrategy, mutation_rate: f64) -> GeneticStrategy {
+    let mut prior = cross(first.prior, second.prior);
+    if rand::random::<f64>() <= mutation_rate {
+        prior = mutate(prior)
+    }
+
+    let mut strategy = [0u8; 32];
+    for i in 0..32 {
+        strategy[i] = cross(first.strategy[i], second.strategy[i]);
+        if rand::random::<f64>() <= mutation_rate {
+            strategy[i] = mutate(strategy[i]);
+        }
+    }
+
+    GeneticStrategy::new(prior, strategy)
+}
+
+/// A private struct to implement roulette wheel selection.
+struct TournamentScore<'a> {
+    strategy: &'a GeneticStrategy,
+    score: f64,
+}
+
+/// Roulette wheel selection
+///
+/// See https://en.wikipedia.org/wiki/Fitness_proportionate_selection
+pub struct RouletteSelector<'a> {
+    scores: Vec<TournamentScore<'a>>,
+    wheel: Vec<f64>,
+}
+
+impl RouletteSelector<'_> {
+    pub fn new<'a>(
+        strategies: &'a Vec<GeneticStrategy>,
+        scores: &Vec<f64>,
+    ) -> RouletteSelector<'a> {
+        let mut tournament_scores = strategies
+            .iter()
+            .zip(scores.iter())
+            .map(|(strategy, score)| TournamentScore {
+                strategy,
+                score: *score,
+            })
+            .collect::<Vec<TournamentScore<'a>>>();
+
+        tournament_scores.sort_by(|a, b| {
+            if a.score <= b.score {
+                Ordering::Less
+            } else {
+                Ordering::Greater
+            }
+        });
+
+        let total_score: f64 = scores.iter().sum();
+        let wheel = tournament_scores
+            .iter()
+            .map(|s| s.score / total_score)
+            .scan(0.0, |acc, x| {
+                *acc += x;
+                Some(*acc)
+            })
+            .collect();
+
+        RouletteSelector {
+            scores: tournament_scores,
+            wheel: wheel,
+        }
+    }
+
+    /// Select a strategy for reproduction.
+    pub fn select<'a>(&'a self) -> &'a GeneticStrategy {
+        let x: f64 = rand::random();
+        let loc = self.wheel.binary_search_by(|&y| {
+            if y <= x {
+                std::cmp::Ordering::Less
+            } else {
+                std::cmp::Ordering::Greater
+            }
+        });
+
+        let idx = match loc {
+            Ok(i) => i,
+            Err(i) => i,
+        };
+
+        self.scores[idx].strategy
+    }
+}
+
 /// Simulation parameters.  These are static over the course of a run.
 #[derive(Debug)]
 pub struct Parameters {
     payoff: Payoff,
     population_size: usize,
     mutation_rate: f64,
-    num_rounds: usize,
+    num_games: usize,
 }
 
 /// A single generation of the simulation.
+///
+/// Fields:
+///
+/// * number (usize): The generation number.  Successive generations increase
+///     the generation number by one.
+/// * strategies (Vec<GeneticStrategy>): A vector storing all of the strategies
+///     in the generation.
+/// * parameters (&'a Parameters): The simulation parameters.
+///
 #[derive(Debug)]
 pub struct Generation<'a> {
     number: usize,
@@ -118,11 +239,41 @@ pub struct Generation<'a> {
     parameters: &'a Parameters,
 }
 
-// impl Generation<'a> {
-//     pub fn select(&self) -> {
+impl Generation<'_> {
+    /// Create a new generation with random strategies
+    pub fn new(parameters: &Parameters) -> Generation {
+        let n = parameters.population_size;
+        Generation {
+            number: 0,
+            strategies: (0..n).map(|_| GeneticStrategy::random()).collect(),
+            parameters: parameters,
+        }
+    }
 
-//     }
-// }
+    pub fn run(&mut self) -> Result<Generation, &'static str> {
+        let scores = tournament(
+            &mut self.strategies,
+            &self.parameters.payoff,
+            self.parameters.num_games,
+        )?;
+
+        let selector = RouletteSelector::new(&self.strategies, &scores);
+        let mut children: Vec<GeneticStrategy> = Vec::new();
+
+        for _ in 0..self.parameters.population_size {
+            let first = selector.select();
+            let second = selector.select();
+            let child = mate(first, second, self.parameters.mutation_rate);
+            children.push(child);
+        }
+
+        Ok(Generation {
+            number: self.number + 1,
+            strategies: children,
+            parameters: self.parameters,
+        })
+    }
+}
 
 #[cfg(test)]
 mod tests {
@@ -202,5 +353,25 @@ mod tests {
 
         assert_eq!(result.0, 100.0 * payoff.sucker);
         assert_eq!(result.1, 100.0 * payoff.temptation);
+    }
+
+    #[test]
+    fn test_cross() {
+        assert_eq!(cross(0xFF, 0xFF), 0xFF);
+        assert_eq!(cross(0x3E, 0x3E), 0x3E);
+    }
+
+    #[test]
+    fn test_generation_run() {
+        let params = Parameters {
+            payoff: Payoff::default(),
+            population_size: 1000,
+            mutation_rate: 0.05,
+            num_games: 64,
+        };
+
+        let mut gen = Generation::new(&params);
+        let gen2 = gen.run().expect("Something");
+        println!("{:?}", gen2);
     }
 }
