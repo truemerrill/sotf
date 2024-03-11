@@ -1,5 +1,5 @@
-use crate as sotf;
+use sotf::{Generation, Payoff, Simulation};
 
 fn main() {
-    println!("Hello, world!");
+    let sim = Simulation::default();
 }

@@ -4,6 +4,7 @@
 use crate::game::{tournament, Choice, Payoff, Strategy};
 use rand::RngCore;
 use std::cmp::Ordering;
+use std::rc::Rc;
 
 /// A Prisoner's Dilemma strategy that can be trained by GA.
 ///
@@ -29,9 +30,8 @@ use std::cmp::Ordering;
 ///
 #[derive(Debug, Clone, Copy, PartialEq, PartialOrd)]
 pub struct GeneticStrategy {
-    prior: u8,
-    strategy: [u8; 32],
-    history: u8,
+    pub(crate) prior: u8,
+    pub(crate) strategy: [u8; 32],
 }
 
 impl GeneticStrategy {
@@ -40,7 +40,6 @@ impl GeneticStrategy {
         GeneticStrategy {
             prior: prior,
             strategy: strategy,
-            history: prior,
         }
     }
 
@@ -54,20 +53,22 @@ impl GeneticStrategy {
 }
 
 impl Strategy for GeneticStrategy {
-    fn choose(&self) -> Choice {
-        match lookup(self.history, &self.strategy) {
+    type History = u8;
+
+    fn choose(&self, history: &Self::History) -> Choice {
+        match lookup(*history, &self.strategy) {
             0x00 => Choice::Cooperate,
             _ => Choice::Defect,
         }
     }
 
-    fn update(&mut self, player_choice: &Choice, opponent_choice: &Choice) -> () {
-        self.history = append(self.history, player_choice);
-        self.history = append(self.history, opponent_choice);
+    fn update(history: &mut Self::History, player_choice: &Choice, opponent_choice: &Choice) -> () {
+        let new_history = append(append(*history, player_choice), opponent_choice);
+        *history = new_history;
     }
 
-    fn reset(&mut self) -> () {
-        self.history = self.prior;
+    fn history(&self) -> Self::History {
+        self.prior
     }
 }
 
@@ -150,7 +151,7 @@ struct TournamentScore<'a> {
 /// Roulette wheel selection
 ///
 /// See https://en.wikipedia.org/wiki/Fitness_proportionate_selection
-pub struct RouletteSelector<'a> {
+struct RouletteSelector<'a> {
     scores: Vec<TournamentScore<'a>>,
     wheel: Vec<f64>,
 }
@@ -214,12 +215,133 @@ impl RouletteSelector<'_> {
 }
 
 /// Simulation parameters.  These are static over the course of a run.
-#[derive(Debug)]
-pub struct Parameters {
-    payoff: Payoff,
-    population_size: usize,
-    mutation_rate: f64,
-    num_games: usize,
+#[derive(Debug, Clone, Copy)]
+pub struct Simulation {
+    pub payoff: Payoff,
+    pub mutation_rate: f64,
+    pub logging_rate: usize,
+    pub num_population: usize,
+    pub num_games: usize,
+    pub num_generations: usize,
+}
+
+impl Simulation {
+    pub fn default() -> Simulation {
+        Simulation {
+            payoff: Payoff::default(),
+            num_population: 1000,
+            mutation_rate: 0.1,
+            logging_rate: 10,
+            num_games: 100,
+            num_generations: 1000,
+        }
+    }
+
+    pub fn state(&self, strategies: &Vec<GeneticStrategy>) -> SimulationState {
+        SimulationState {
+            simulation: self.clone(),
+            number: 0,
+            strategies: Rc::new(strategies.clone()),
+        }
+    }
+
+    pub fn random(&self) -> SimulationState {
+        let strategies = (0..self.num_population)
+            .map(|_| GeneticStrategy::random())
+            .collect();
+
+        SimulationState {
+            simulation: self.clone(),
+            number: 0,
+            strategies: Rc::new(strategies),
+        }
+    }
+}
+
+pub struct SimulationState {
+    simulation: Simulation,
+    pub number: usize,
+    pub strategies: Rc<Vec<GeneticStrategy>>,
+}
+
+impl<'a> IntoIterator for &'a mut SimulationState {
+    type IntoIter = GenerationIter<'a>;
+    type Item = Generation;
+
+    fn into_iter(self) -> Self::IntoIter {
+        let scores = vec![0.0; self.simulation.num_population];
+        GenerationIter {
+            state: self,
+            scores: Rc::new(scores),
+        }
+    }
+}
+
+pub struct GenerationIter<'a> {
+    state: &'a mut SimulationState,
+    pub scores: Rc<Vec<f64>>,
+}
+
+impl<'a> Iterator for GenerationIter<'a> {
+    type Item = Generation;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        let num_gen = self.state.simulation.num_generations;
+
+        // Calculate the scores for the first generation
+        if self.state.number == 0 {
+            let scores = tournament(
+                &mut self.state.strategies,
+                &self.state.simulation.payoff,
+                self.state.simulation.num_games,
+            );
+        }
+        // Calculate the next generation
+        else if self.state.number > 0 && self.state.number < num_gen {
+            let mut strategies =
+                breed(&self.state.simulation, &self.state.strategies, &self.scores);
+
+            let scores = tournament(
+                &mut strategies,
+                &self.state.simulation.payoff,
+                self.state.simulation.num_games,
+            )
+            .unwrap();
+
+            self.state.strategies = Rc::new(strategies);
+            self.scores = Rc::new(scores);
+        }
+
+        let result = match self.state.number {
+            x if x < num_gen => Some(Generation {
+                number: self.state.number,
+                strategies: Rc::clone(&self.state.strategies),
+                scores: Rc::clone(&self.scores),
+            }),
+            _ => None,
+        };
+
+        self.state.number += 1;
+        result
+    }
+}
+
+fn breed<'a>(
+    simulation: &Simulation,
+    strategies: &'a Vec<GeneticStrategy>,
+    scores: &'a Vec<f64>,
+) -> Vec<GeneticStrategy> {
+    let selector = RouletteSelector::new(&strategies, &scores);
+    let mut children: Vec<GeneticStrategy> = Vec::new();
+
+    for _ in 0..simulation.num_population {
+        let first = selector.select();
+        let second = selector.select();
+        let child = mate(first, second, simulation.mutation_rate);
+        children.push(child);
+    }
+
+    children
 }
 
 /// A single generation of the simulation.
@@ -233,47 +355,26 @@ pub struct Parameters {
 /// * parameters (&'a Parameters): The simulation parameters.
 ///
 #[derive(Debug)]
-pub struct Generation<'a> {
-    number: usize,
-    strategies: Vec<GeneticStrategy>,
-    parameters: &'a Parameters,
+pub struct Generation {
+    pub number: usize,
+    pub strategies: Rc<Vec<GeneticStrategy>>,
+    pub scores: Rc<Vec<f64>>,
 }
 
-impl Generation<'_> {
-    /// Create a new generation with random strategies
-    pub fn new(parameters: &Parameters) -> Generation {
-        let n = parameters.population_size;
-        Generation {
-            number: 0,
-            strategies: (0..n).map(|_| GeneticStrategy::random()).collect(),
-            parameters: parameters,
-        }
-    }
+// impl Generation {
+//     /// Create a new generation with random strategies
+//     pub fn new(simulation: &Simulation) -> Generation {
+//         let n = simulation.population_size;
+//         let mut strategies = (0..n).map(|_| GeneticStrategy::random()).collect();
+//         let scores = tournament(&mut strategies, &simulation.payoff, simulation.num_games).unwrap();
 
-    pub fn run(&mut self) -> Result<Generation, &'static str> {
-        let scores = tournament(
-            &mut self.strategies,
-            &self.parameters.payoff,
-            self.parameters.num_games,
-        )?;
-
-        let selector = RouletteSelector::new(&self.strategies, &scores);
-        let mut children: Vec<GeneticStrategy> = Vec::new();
-
-        for _ in 0..self.parameters.population_size {
-            let first = selector.select();
-            let second = selector.select();
-            let child = mate(first, second, self.parameters.mutation_rate);
-            children.push(child);
-        }
-
-        Ok(Generation {
-            number: self.number + 1,
-            strategies: children,
-            parameters: self.parameters,
-        })
-    }
-}
+//         Generation {
+//             number: 0,
+//             strategies: strategies,
+//             scores: scores,
+//         }
+//     }
+// }
 
 #[cfg(test)]
 mod tests {
@@ -299,25 +400,22 @@ mod tests {
         s[0] = 0b1010_0000;
         s[19] = 0b0000_1011;
 
-        let mut c = GeneticStrategy::new(0x00, s);
+        let c = GeneticStrategy::new(0x00, s);
 
-        c.history = 0;
-        assert_eq!(c.choose(), Choice::Defect);
-        c.history = 1;
-        assert_eq!(c.choose(), Choice::Cooperate);
-        c.history = 2;
-        assert_eq!(c.choose(), Choice::Defect);
+        assert_eq!(c.choose(&0u8), Choice::Defect);
+        assert_eq!(c.choose(&1u8), Choice::Cooperate);
+        assert_eq!(c.choose(&2u8), Choice::Defect);
 
-        c.history = 8 * 19 + 4;
-        assert_eq!(c.choose(), Choice::Defect);
-        c.history = 8 * 19 + 5;
-        assert_eq!(c.choose(), Choice::Cooperate);
-        c.history = 8 * 19 + 6;
-        assert_eq!(c.choose(), Choice::Defect);
-        c.history = 8 * 19 + 7;
-        assert_eq!(c.choose(), Choice::Defect);
-        c.history = 8 * 20;
-        assert_eq!(c.choose(), Choice::Cooperate);
+        let mut history = 8 * 19 + 4;
+        assert_eq!(c.choose(&history), Choice::Defect);
+        history = 8 * 19 + 5;
+        assert_eq!(c.choose(&history), Choice::Cooperate);
+        history = 8 * 19 + 6;
+        assert_eq!(c.choose(&history), Choice::Defect);
+        history = 8 * 19 + 7;
+        assert_eq!(c.choose(&history), Choice::Defect);
+        history = 8 * 20;
+        assert_eq!(c.choose(&history), Choice::Cooperate);
     }
 
     #[test]
@@ -333,11 +431,11 @@ mod tests {
         let s2 = [0u8; 32];
 
         // Player one should defect and player 2 should cooperate.
-        let mut p1 = GeneticStrategy::new(0x00, s1);
-        let mut p2 = GeneticStrategy::new(0x00, s2);
+        let p1 = GeneticStrategy::new(0x00, s1);
+        let p2 = GeneticStrategy::new(0x00, s2);
 
         let payoff = Payoff::default();
-        let result = game(&mut p1, &mut p2, &payoff);
+        let result = game(&p1, &mut p1.history(), &p2, &mut p2.history(), &payoff);
 
         assert_eq!(result.0, payoff.temptation);
         assert_eq!(result.1, payoff.sucker);
@@ -363,15 +461,14 @@ mod tests {
 
     #[test]
     fn test_generation_run() {
-        let params = Parameters {
-            payoff: Payoff::default(),
-            population_size: 1000,
-            mutation_rate: 0.05,
-            num_games: 64,
-        };
+        let mut sim = Simulation::default();
+        sim.num_generations = 3;
 
-        let mut gen = Generation::new(&params);
-        let gen2 = gen.run().expect("Something");
-        println!("{:?}", gen2);
+        for gen in sim.random().into_iter() {
+            println!("{:?}", gen.number);
+        }
+        // for gen in sim.iter() {
+        //     println!("{:?}", gen.number);
+        // }
     }
 }
