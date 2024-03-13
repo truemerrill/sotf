@@ -158,6 +158,13 @@ pub fn tournament<'a, S: Strategy>(
     Ok(scores)
 }
 
+// /// A trait for selection algorithms
+// pub trait Selector<S: Strategy> {
+//     fn new<'a>(strategies: &'a Vec<S>, scores: &Vec<f64>, selection_rate: f64) -> Self;
+
+//     fn select<'a>(&'a self) -> &'a S;
+// }
+
 // Some classic strategies ...
 
 #[derive(Debug, Clone, Copy)]
@@ -170,7 +177,11 @@ impl Strategy for TitForTat {
         *history
     }
 
-    fn update(history: &mut Self::History, player_choice: &Choice, opponent_choice: &Choice) -> () {
+    fn update(
+        history: &mut Self::History,
+        _player_choice: &Choice,
+        opponent_choice: &Choice,
+    ) -> () {
         *history = *opponent_choice;
     }
 
@@ -250,8 +261,8 @@ mod tests {
 
     #[test]
     fn test_cooperate() {
-        let mut p1 = TitForTat {};
-        let mut p2 = TitForTat {};
+        let p1 = TitForTat {};
+        let p2 = TitForTat {};
         let payoff = Payoff::default();
 
         let (s1, s2) = game(&p1, &mut p1.history(), &p2, &mut p2.history(), &payoff);

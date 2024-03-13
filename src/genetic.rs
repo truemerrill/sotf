@@ -50,6 +50,16 @@ impl GeneticStrategy {
         rand::thread_rng().fill_bytes(&mut strategy);
         GeneticStrategy::new(prior, strategy)
     }
+
+    /// Get the chromosome as a byte array
+    pub fn chromosome(&self) -> [u8; 33] {
+        let mut ch = [0u8; 33];
+        ch[0] = self.prior;
+        for i in 0..32 {
+            ch[i + 1] = self.strategy[i];
+        }
+        ch
+    }
 }
 
 impl Strategy for GeneticStrategy {
@@ -103,11 +113,6 @@ fn lookup(index: u8, data: &[u8; 32]) -> u8 {
     (byte << (index % 8)) & 0x80
 }
 
-fn cross(first: u8, second: u8) -> u8 {
-    let mask: u8 = rand::random();
-    (first & mask) | (second & !mask)
-}
-
 fn mutate(byte: u8) -> u8 {
     let choice: u8 = rand::random();
     let mask = match choice % 8 {
@@ -125,27 +130,85 @@ fn mutate(byte: u8) -> u8 {
     byte ^ mask
 }
 
-fn mate(first: &GeneticStrategy, second: &GeneticStrategy, mutation_rate: f64) -> GeneticStrategy {
-    let mut prior = cross(first.prior, second.prior);
-    if rand::random::<f64>() <= mutation_rate {
-        prior = mutate(prior)
+fn might_mutate(byte: u8, mutation_rate: f64) -> u8 {
+    if rand::random::<f64>() < mutation_rate {
+        mutate(byte)
+    } else {
+        byte
     }
-
-    let mut strategy = [0u8; 32];
-    for i in 0..32 {
-        strategy[i] = cross(first.strategy[i], second.strategy[i]);
-        if rand::random::<f64>() <= mutation_rate {
-            strategy[i] = mutate(strategy[i]);
-        }
-    }
-
-    GeneticStrategy::new(prior, strategy)
 }
 
-/// A private struct to implement roulette wheel selection.
+/// A private struct to implement selection.
 struct TournamentScore<'a> {
     strategy: &'a GeneticStrategy,
     score: f64,
+}
+
+struct RankSelector<'a> {
+    scores: Vec<TournamentScore<'a>>,
+    wheel: Vec<f64>,
+}
+
+impl RankSelector<'_> {
+    pub fn new<'a>(
+        strategies: &'a Vec<GeneticStrategy>,
+        scores: &Vec<f64>,
+        selection_rate: f64,
+    ) -> RankSelector<'a> {
+        let mut tournament_scores = strategies
+            .iter()
+            .zip(scores.iter())
+            .map(|(strategy, score)| TournamentScore {
+                strategy,
+                score: *score,
+            })
+            .collect::<Vec<TournamentScore<'a>>>();
+
+        tournament_scores.sort_by(|a, b| {
+            if a.score > b.score {
+                Ordering::Less
+            } else {
+                Ordering::Greater
+            }
+        });
+
+        let sp = 1.0 + selection_rate;
+        let n = tournament_scores.len() as f64;
+        let wheel = (0..tournament_scores.len())
+            .map(|idx| {
+                let j = idx as f64;
+                (1.0 / n) * (sp - (2.0 * sp - 2.0) * (j / (n - 1.0)))
+            })
+            .scan(0.0, |acc, x| {
+                *acc += x;
+                Some(*acc)
+            })
+            .collect();
+
+        RankSelector {
+            scores: tournament_scores,
+            wheel: wheel,
+        }
+    }
+
+    /// Select a strategy for reproduction.
+    pub fn select<'a>(&'a self) -> &'a GeneticStrategy {
+        let x: f64 = rand::random();
+        let loc = self.wheel.binary_search_by(|&y| {
+            if y <= x {
+                std::cmp::Ordering::Less
+            } else {
+                std::cmp::Ordering::Greater
+            }
+        });
+
+        let idx = match loc {
+            Ok(i) => i,
+            Err(i) => i,
+        };
+
+        self.scores[idx].strategy
+    }
 }
 
 /// Roulette wheel selection
@@ -160,6 +223,7 @@ impl RouletteSelector<'_> {
     pub fn new<'a>(
         strategies: &'a Vec<GeneticStrategy>,
         scores: &Vec<f64>,
+        selection_rate: f64,
     ) -> RouletteSelector<'a> {
         let mut tournament_scores = strategies
             .iter()
@@ -178,10 +242,10 @@ impl RouletteSelector<'_> {
             }
         });
 
-        let total_score: f64 = scores.iter().sum();
+        let total_score: f64 = scores.iter().map(|s| s.powf(selection_rate)).sum();
         let wheel = tournament_scores
             .iter()
-            .map(|s| s.score / total_score)
+            .map(|s| s.score.powf(selection_rate) / total_score)
             .scan(0.0, |acc, x| {
                 *acc += x;
                 Some(*acc)
@@ -219,6 +283,7 @@ impl RouletteSelector<'_> {
 pub struct Simulation {
     pub payoff: Payoff,
     pub mutation_rate: f64,
+    pub selection_rate: f64,
     pub logging_rate: usize,
     pub num_population: usize,
     pub num_games: usize,
@@ -231,6 +296,7 @@ impl Simulation {
             payoff: Payoff::default(),
             num_population: 1000,
             mutation_rate: 0.1,
+            selection_rate: 2.0,
             logging_rate: 10,
             num_games: 100,
             num_generations: 1000,
@@ -294,7 +360,10 @@ impl<'a> Iterator for GenerationIter<'a> {
                 &mut self.state.strategies,
                 &self.state.simulation.payoff,
                 self.state.simulation.num_games,
-            );
+            )
+            .unwrap();
+
+            self.scores = Rc::new(scores);
         }
         // Calculate the next generation
         else if self.state.number > 0 && self.state.number < num_gen {
@@ -331,13 +400,22 @@ fn breed<'a>(
     strategies: &'a Vec<GeneticStrategy>,
     scores: &'a Vec<f64>,
 ) -> Vec<GeneticStrategy> {
-    let selector = RouletteSelector::new(&strategies, &scores);
+    let selector = RankSelector::new(&strategies, &scores, simulation.selection_rate);
     let mut children: Vec<GeneticStrategy> = Vec::new();
+    let mutation_rate = simulation.mutation_rate;
 
     for _ in 0..simulation.num_population {
-        let first = selector.select();
-        let second = selector.select();
-        let child = mate(first, second, simulation.mutation_rate);
+        let parent = selector.select();
+        let child = GeneticStrategy::new(
+            might_mutate(parent.prior, mutation_rate),
+            parent
+                .strategy
+                .clone()
+                .map(|x| might_mutate(x, mutation_rate)),
+        );
+
+        // let second = selector.select();
+        // let child = mate(first, second, simulation.mutation_rate);
         children.push(child);
     }
 
@@ -360,21 +438,6 @@ pub struct Generation {
     pub strategies: Rc<Vec<GeneticStrategy>>,
     pub scores: Rc<Vec<f64>>,
 }
-
-// impl Generation {
-//     /// Create a new generation with random strategies
-//     pub fn new(simulation: &Simulation) -> Generation {
-//         let n = simulation.population_size;
-//         let mut strategies = (0..n).map(|_| GeneticStrategy::random()).collect();
-//         let scores = tournament(&mut strategies, &simulation.payoff, simulation.num_games).unwrap();
-
-//         Generation {
-//             number: 0,
-//             strategies: strategies,
-//             scores: scores,
-//         }
-//     }
-// }
 
 #[cfg(test)]
 mod tests {
@@ -454,18 +517,15 @@ mod tests {
     }
 
     #[test]
-    fn test_cross() {
-        assert_eq!(cross(0xFF, 0xFF), 0xFF);
-        assert_eq!(cross(0x3E, 0x3E), 0x3E);
-    }
-
-    #[test]
     fn test_generation_run() {
         let mut sim = Simulation::default();
         sim.num_generations = 3;
+        sim.num_population = 20;
+        sim.selection_rate = 1.0;
 
-        for gen in sim.random().into_iter() {
-            println!("{:?}", gen.number);
+        let mut state = sim.random();
+        for gen in state.into_iter() {
+            // println!("{:?}", gen.number);
         }
         // for gen in sim.iter() {
         //     println!("{:?}", gen.number);
