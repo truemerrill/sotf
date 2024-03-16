@@ -211,73 +211,6 @@ impl RankSelector<'_> {
     }
 }
 
-/// Roulette wheel selection
-///
-/// See https://en.wikipedia.org/wiki/Fitness_proportionate_selection
-struct RouletteSelector<'a> {
-    scores: Vec<TournamentScore<'a>>,
-    wheel: Vec<f64>,
-}
-
-impl RouletteSelector<'_> {
-    pub fn new<'a>(
-        strategies: &'a Vec<GeneticStrategy>,
-        scores: &Vec<f64>,
-        selection_rate: f64,
-    ) -> RouletteSelector<'a> {
-        let mut tournament_scores = strategies
-            .iter()
-            .zip(scores.iter())
-            .map(|(strategy, score)| TournamentScore {
-                strategy,
-                score: *score,
-            })
-            .collect::<Vec<TournamentScore<'a>>>();
-
-        tournament_scores.sort_by(|a, b| {
-            if a.score <= b.score {
-                Ordering::Less
-            } else {
-                Ordering::Greater
-            }
-        });
-
-        let total_score: f64 = scores.iter().map(|s| s.powf(selection_rate)).sum();
-        let wheel = tournament_scores
-            .iter()
-            .map(|s| s.score.powf(selection_rate) / total_score)
-            .scan(0.0, |acc, x| {
-                *acc += x;
-                Some(*acc)
-            })
-            .collect();
-
-        RouletteSelector {
-            scores: tournament_scores,
-            wheel: wheel,
-        }
-    }
-
-    /// Select a strategy for reproduction.
-    pub fn select<'a>(&'a self) -> &'a GeneticStrategy {
-        let x: f64 = rand::random();
-        let loc = self.wheel.binary_search_by(|&y| {
-            if y <= x {
-                std::cmp::Ordering::Less
-            } else {
-                std::cmp::Ordering::Greater
-            }
-        });
-
-        let idx = match loc {
-            Ok(i) => i,
-            Err(i) => i,
-        };
-
-        self.scores[idx].strategy
-    }
-}
-
 /// Simulation parameters.  These are static over the course of a run.
 #[derive(Debug, Clone, Copy)]
 pub struct Simulation {
@@ -414,8 +347,6 @@ fn breed<'a>(
                 .map(|x| might_mutate(x, mutation_rate)),
         );
 
-        // let second = selector.select();
-        // let child = mate(first, second, simulation.mutation_rate);
         children.push(child);
     }
 
