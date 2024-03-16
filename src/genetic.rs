@@ -212,6 +212,18 @@ impl RankSelector<'_> {
 }
 
 /// Simulation parameters.  These are static over the course of a run.
+///
+/// Fields:
+///
+/// - payoff (Payoff): the payoff structure for the game
+/// - mutation_rate (f64): the probability that a given byte will be mutated
+/// - selection_rate (f64): a parameter between 0.0 and 1.0 controlling the
+///         strength of the selection process.
+/// - logging_rate (usize): the rate at which outputs are logged.
+/// - num_population (usize): the size of the population
+/// - num_games (usize): the number of games in a single round
+/// - num_generations (usize): the number of generations to simulate
+///
 #[derive(Debug, Clone, Copy)]
 pub struct Simulation {
     pub payoff: Payoff,
@@ -224,6 +236,7 @@ pub struct Simulation {
 }
 
 impl Simulation {
+    /// Initialize a simulation with the default parameters
     pub fn default() -> Simulation {
         Simulation {
             payoff: Payoff::default(),
@@ -236,6 +249,7 @@ impl Simulation {
         }
     }
 
+    /// Construct a simulation state given a population of strategies
     pub fn state(&self, strategies: &Vec<GeneticStrategy>) -> SimulationState {
         SimulationState {
             simulation: self.clone(),
@@ -244,6 +258,7 @@ impl Simulation {
         }
     }
 
+    /// Construct a simulation state using random strategies
     pub fn random(&self) -> SimulationState {
         let strategies = (0..self.num_population)
             .map(|_| GeneticStrategy::random())
@@ -257,6 +272,17 @@ impl Simulation {
     }
 }
 
+/// The simulation state
+///
+/// The state contains all mutable state in the simulation
+///
+/// Fields:
+///
+/// - simulation (Simulation): the static simulation parameters
+/// - number (usize): the current generation number
+/// - strategies (Rc<Vec<GeneticStrategy>>): a vector of the strategies
+///         currently in the population
+///
 pub struct SimulationState {
     simulation: Simulation,
     pub number: usize,
@@ -267,6 +293,7 @@ impl<'a> IntoIterator for &'a mut SimulationState {
     type IntoIter = GenerationIter<'a>;
     type Item = Generation;
 
+    /// Iterate over generations
     fn into_iter(self) -> Self::IntoIter {
         let scores = vec![0.0; self.simulation.num_population];
         GenerationIter {
