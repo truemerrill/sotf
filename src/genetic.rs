@@ -144,12 +144,28 @@ struct TournamentScore<'a> {
     score: f64,
 }
 
-struct RankSelector<'a> {
+/// A type that can rank strategies and randomly select them by their rank
+///
+/// The RankSelector uses the rank selection algorithm to select a random strategy
+/// with a probability that increases with their rank (the highest scoring strategies
+/// are selected with highest probability). 
+///
+pub struct RankSelector<'a> {
     scores: Vec<TournamentScore<'a>>,
     wheel: Vec<f64>,
 }
 
 impl RankSelector<'_> {
+
+    /// Create a new RankSelector
+    ///
+    /// Arguments:
+    ///
+    /// - strategies (&'a Vec<GeneticStrategy>): the strategies to rank
+    /// - scores (&Vec<f64>): the scores of each strategy
+    /// - selection_rate (f64): the selection rate parameter. This must be a number
+    ///     between zero and one.
+    ///
     pub fn new<'a>(
         strategies: &'a Vec<GeneticStrategy>,
         scores: &Vec<f64>,
@@ -191,7 +207,7 @@ impl RankSelector<'_> {
         }
     }
 
-    /// Select a strategy for reproduction.
+    /// Select a random strategy for reproduction.
     pub fn select<'a>(&'a self) -> &'a GeneticStrategy {
         let x: f64 = rand::random();
         let loc = self.wheel.binary_search_by(|&y| {
@@ -208,6 +224,14 @@ impl RankSelector<'_> {
         };
 
         self.scores[idx].strategy
+    }
+
+    /// Get a strategy in rank order (zero is highest rank)
+    pub fn get<'a>(&'a self, index: usize) -> Option<&'a GeneticStrategy> {
+        match self.scores.get(index) {
+            Some(score) => Some(score.strategy),
+            None => None
+        }
     }
 }
 
