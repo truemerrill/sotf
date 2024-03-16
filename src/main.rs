@@ -13,7 +13,7 @@ fn main() -> Result<(), Error> {
     sim.mutation_rate = 0.05;
     let sim_id = write_simulation(&conn, &sim)?;
 
-    for gen in sim.random().into_iter() {
+    for gen in sim.random() {
         let gen_id = write_generation(&conn, &gen, sim_id)?;
         write_generation_data(&conn, &sim, &gen, gen_id)?;
         println!("Generation {:?}", gen_id);

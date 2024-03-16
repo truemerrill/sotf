@@ -3,7 +3,6 @@
 
 use crate::game::{tournament, Choice, Payoff, Strategy};
 use rand::RngCore;
-use std::cmp::Ordering;
 use std::rc::Rc;
 
 /// A Prisoner's Dilemma strategy that can be trained by GA.
@@ -138,59 +137,30 @@ fn might_mutate(byte: u8, mutation_rate: f64) -> u8 {
     }
 }
 
-/// A private struct to implement selection.
-struct TournamentScore<'a> {
-    strategy: &'a GeneticStrategy,
-    score: f64,
-}
-
 /// A type that can rank strategies and randomly select them by their rank
 ///
 /// The RankSelector uses the rank selection algorithm to select a random strategy
 /// with a probability that increases with their rank (the highest scoring strategies
-/// are selected with highest probability). 
+/// are selected with highest probability).
 ///
-pub struct RankSelector<'a> {
-    scores: Vec<TournamentScore<'a>>,
+#[derive(Debug)]
+struct RankSelector {
     wheel: Vec<f64>,
 }
 
-impl RankSelector<'_> {
-
+impl RankSelector {
     /// Create a new RankSelector
     ///
     /// Arguments:
     ///
-    /// - strategies (&'a Vec<GeneticStrategy>): the strategies to rank
     /// - scores (&Vec<f64>): the scores of each strategy
     /// - selection_rate (f64): the selection rate parameter. This must be a number
     ///     between zero and one.
     ///
-    pub fn new<'a>(
-        strategies: &'a Vec<GeneticStrategy>,
-        scores: &Vec<f64>,
-        selection_rate: f64,
-    ) -> RankSelector<'a> {
-        let mut tournament_scores = strategies
-            .iter()
-            .zip(scores.iter())
-            .map(|(strategy, score)| TournamentScore {
-                strategy,
-                score: *score,
-            })
-            .collect::<Vec<TournamentScore<'a>>>();
-
-        tournament_scores.sort_by(|a, b| {
-            if a.score > b.score {
-                Ordering::Less
-            } else {
-                Ordering::Greater
-            }
-        });
-
+    pub fn new(scores: &Vec<f64>, selection_rate: f64) -> RankSelector {
         let sp = 1.0 + selection_rate;
-        let n = tournament_scores.len() as f64;
-        let wheel = (0..tournament_scores.len())
+        let n = scores.len() as f64;
+        let wheel = (0..scores.len())
             .map(|idx| {
                 let j = idx as f64;
                 (1.0 / n) * (sp - (2.0 * sp - 2.0) * (j / (n - 1.0)))
@@ -201,14 +171,11 @@ impl RankSelector<'_> {
             })
             .collect();
 
-        RankSelector {
-            scores: tournament_scores,
-            wheel: wheel,
-        }
+        RankSelector { wheel }
     }
 
     /// Select a random strategy for reproduction.
-    pub fn select<'a>(&'a self) -> &'a GeneticStrategy {
+    pub fn select(&self) -> usize {
         let x: f64 = rand::random();
         let loc = self.wheel.binary_search_by(|&y| {
             if y <= x {
@@ -218,19 +185,9 @@ impl RankSelector<'_> {
             }
         });
 
-        let idx = match loc {
+        match loc {
             Ok(i) => i,
             Err(i) => i,
-        };
-
-        self.scores[idx].strategy
-    }
-
-    /// Get a strategy in rank order (zero is highest rank)
-    pub fn get<'a>(&'a self, index: usize) -> Option<&'a GeneticStrategy> {
-        match self.scores.get(index) {
-            Some(score) => Some(score.strategy),
-            None => None
         }
     }
 }
@@ -275,11 +232,7 @@ impl Simulation {
 
     /// Construct a simulation state given a population of strategies
     pub fn state(&self, strategies: &Vec<GeneticStrategy>) -> SimulationState {
-        SimulationState {
-            simulation: self.clone(),
-            number: 0,
-            strategies: Rc::new(strategies.clone()),
-        }
+        SimulationState::new(self, strategies)
     }
 
     /// Construct a simulation state using random strategies
@@ -288,11 +241,7 @@ impl Simulation {
             .map(|_| GeneticStrategy::random())
             .collect();
 
-        SimulationState {
-            simulation: self.clone(),
-            number: 0,
-            strategies: Rc::new(strategies),
-        }
+        SimulationState::new(self, &strategies)
     }
 }
 
@@ -311,97 +260,86 @@ pub struct SimulationState {
     simulation: Simulation,
     pub number: usize,
     pub strategies: Rc<Vec<GeneticStrategy>>,
+    pub scores: Rc<Vec<f64>>,
 }
 
-impl<'a> IntoIterator for &'a mut SimulationState {
-    type IntoIter = GenerationIter<'a>;
-    type Item = Generation;
+impl SimulationState {
+    pub fn new(simulation: &Simulation, strategies: &Vec<GeneticStrategy>) -> SimulationState {
+        let mut strats = strategies.clone();
+        let mut scores = score_strategies(&strats, simulation);
+        sort_strategies(&mut strats, &mut scores);
 
-    /// Iterate over generations
-    fn into_iter(self) -> Self::IntoIter {
-        let scores = vec![0.0; self.simulation.num_population];
-        GenerationIter {
-            state: self,
+        SimulationState {
+            simulation: simulation.clone(),
+            number: 0,
+            strategies: Rc::new(strats),
             scores: Rc::new(scores),
         }
     }
 }
 
-pub struct GenerationIter<'a> {
-    state: &'a mut SimulationState,
-    pub scores: Rc<Vec<f64>>,
+fn sort_strategies(strategies: &mut Vec<GeneticStrategy>, scores: &mut Vec<f64>) {
+    let mut indices: Vec<usize> = (0..scores.len()).collect();
+    indices.sort_by(|&i, &j| scores[j].partial_cmp(&scores[i]).unwrap());
+
+    let sorted_strategies = indices.iter().map(|&i| strategies[i]).collect();
+    let sorted_scores = indices.iter().map(|&i| scores[i]).collect();
+    *strategies = sorted_strategies;
+    *scores = sorted_scores;
 }
 
-impl<'a> Iterator for GenerationIter<'a> {
-    type Item = Generation;
-
-    fn next(&mut self) -> Option<Self::Item> {
-        let num_gen = self.state.simulation.num_generations;
-
-        // Calculate the scores for the first generation
-        if self.state.number == 0 {
-            let scores = tournament(
-                &mut self.state.strategies,
-                &self.state.simulation.payoff,
-                self.state.simulation.num_games,
-            )
-            .unwrap();
-
-            self.scores = Rc::new(scores);
-        }
-        // Calculate the next generation
-        else if self.state.number > 0 && self.state.number < num_gen {
-            let mut strategies =
-                breed(&self.state.simulation, &self.state.strategies, &self.scores);
-
-            let scores = tournament(
-                &mut strategies,
-                &self.state.simulation.payoff,
-                self.state.simulation.num_games,
-            )
-            .unwrap();
-
-            self.state.strategies = Rc::new(strategies);
-            self.scores = Rc::new(scores);
-        }
-
-        let result = match self.state.number {
-            x if x < num_gen => Some(Generation {
-                number: self.state.number,
-                strategies: Rc::clone(&self.state.strategies),
-                scores: Rc::clone(&self.scores),
-            }),
-            _ => None,
-        };
-
-        self.state.number += 1;
-        result
-    }
+fn score_strategies(strategies: &Vec<GeneticStrategy>, simulation: &Simulation) -> Vec<f64> {
+    tournament(strategies, &simulation.payoff, simulation.num_games)
+        .expect("failed to compute scores")
 }
 
-fn breed<'a>(
+fn breed_strategies(
+    selector: &RankSelector,
+    strategies: &Vec<GeneticStrategy>,
     simulation: &Simulation,
-    strategies: &'a Vec<GeneticStrategy>,
-    scores: &'a Vec<f64>,
 ) -> Vec<GeneticStrategy> {
-    let selector = RankSelector::new(&strategies, &scores, simulation.selection_rate);
     let mut children: Vec<GeneticStrategy> = Vec::new();
-    let mutation_rate = simulation.mutation_rate;
 
     for _ in 0..simulation.num_population {
-        let parent = selector.select();
+        let index = selector.select();
+        let parent = strategies[index];
         let child = GeneticStrategy::new(
-            might_mutate(parent.prior, mutation_rate),
+            might_mutate(parent.prior, simulation.mutation_rate),
             parent
                 .strategy
                 .clone()
-                .map(|x| might_mutate(x, mutation_rate)),
+                .map(|x| might_mutate(x, simulation.mutation_rate)),
         );
 
         children.push(child);
     }
 
     children
+}
+
+impl Iterator for SimulationState {
+    type Item = Generation;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        if self.number < self.simulation.num_generations {
+            let selector = RankSelector::new(&self.scores, self.simulation.selection_rate);
+            let mut strats = breed_strategies(&selector, &self.strategies, &self.simulation);
+            let mut scores = score_strategies(&strats, &self.simulation);
+            sort_strategies(&mut strats, &mut scores);
+
+            self.strategies = Rc::new(strats);
+            self.scores = Rc::new(scores);
+            self.number += 1;
+
+            Some(Generation {
+                number: self.number,
+                strategies: Rc::clone(&self.strategies),
+                scores: Rc::clone(&self.scores),
+            })
+        } else {
+            None
+        }
+    }
 }
 
 /// A single generation of the simulation.
@@ -505,12 +443,8 @@ mod tests {
         sim.num_population = 20;
         sim.selection_rate = 1.0;
 
-        let mut state = sim.random();
-        for gen in state.into_iter() {
-            // println!("{:?}", gen.number);
+        for gen in sim.random() {
+            assert!(gen.scores.windows(2).all(|pair| pair[0] >= pair[1]));
         }
-        // for gen in sim.iter() {
-        //     println!("{:?}", gen.number);
-        // }
     }
 }
