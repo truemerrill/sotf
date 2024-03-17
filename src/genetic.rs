@@ -261,34 +261,45 @@ pub struct SimulationState {
     pub number: usize,
     pub strategies: Rc<Vec<GeneticStrategy>>,
     pub scores: Rc<Vec<f64>>,
+    pub wins: Rc<Vec<usize>>,
 }
 
 impl SimulationState {
     pub fn new(simulation: &Simulation, strategies: &Vec<GeneticStrategy>) -> SimulationState {
         let mut strats = strategies.clone();
-        let mut scores = score_strategies(&strats, simulation);
-        sort_strategies(&mut strats, &mut scores);
+        let (mut scores, mut wins) = score_strategies(&strats, simulation);
+        sort_strategies(&mut strats, &mut scores, &mut wins);
 
         SimulationState {
             simulation: simulation.clone(),
             number: 0,
             strategies: Rc::new(strats),
             scores: Rc::new(scores),
+            wins: Rc::new(wins),
         }
     }
 }
 
-fn sort_strategies(strategies: &mut Vec<GeneticStrategy>, scores: &mut Vec<f64>) {
+fn sort_strategies(
+    strategies: &mut Vec<GeneticStrategy>,
+    scores: &mut Vec<f64>,
+    wins: &mut Vec<usize>,
+) {
     let mut indices: Vec<usize> = (0..scores.len()).collect();
     indices.sort_by(|&i, &j| scores[j].partial_cmp(&scores[i]).unwrap());
 
     let sorted_strategies = indices.iter().map(|&i| strategies[i]).collect();
     let sorted_scores = indices.iter().map(|&i| scores[i]).collect();
+    let sorted_wins = indices.iter().map(|&i| wins[i]).collect();
     *strategies = sorted_strategies;
     *scores = sorted_scores;
+    *wins = sorted_wins;
 }
 
-fn score_strategies(strategies: &Vec<GeneticStrategy>, simulation: &Simulation) -> Vec<f64> {
+fn score_strategies(
+    strategies: &Vec<GeneticStrategy>,
+    simulation: &Simulation,
+) -> (Vec<f64>, Vec<usize>) {
     tournament(strategies, &simulation.payoff, simulation.num_games)
         .expect("failed to compute scores")
 }
@@ -324,17 +335,19 @@ impl Iterator for SimulationState {
         if self.number < self.simulation.num_generations {
             let selector = RankSelector::new(&self.scores, self.simulation.selection_rate);
             let mut strats = breed_strategies(&selector, &self.strategies, &self.simulation);
-            let mut scores = score_strategies(&strats, &self.simulation);
-            sort_strategies(&mut strats, &mut scores);
+            let (mut scores, mut wins) = score_strategies(&strats, &self.simulation);
+            sort_strategies(&mut strats, &mut scores, &mut wins);
 
             self.strategies = Rc::new(strats);
             self.scores = Rc::new(scores);
+            self.wins = Rc::new(wins);
             self.number += 1;
 
             Some(Generation {
                 number: self.number,
                 strategies: Rc::clone(&self.strategies),
                 scores: Rc::clone(&self.scores),
+                wins: Rc::clone(&self.wins),
             })
         } else {
             None
@@ -357,6 +370,7 @@ pub struct Generation {
     pub number: usize,
     pub strategies: Rc<Vec<GeneticStrategy>>,
     pub scores: Rc<Vec<f64>>,
+    pub wins: Rc<Vec<usize>>,
 }
 
 #[cfg(test)]

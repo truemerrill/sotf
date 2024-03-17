@@ -133,17 +133,20 @@ pub fn round<F: Strategy, S: Strategy>(
 /// Returns:
 ///
 /// Vec<f64>: The cumulative payoff for each player in the tournament
+/// Vec<usize>: The number of rounds each player "wins".
+///
 pub fn tournament<'a, S: Strategy>(
     strategies: &'a Vec<S>,
     payoff: &'a Payoff,
     num_games: usize,
-) -> Result<Vec<f64>, &'static str> {
+) -> Result<(Vec<f64>, Vec<usize>), &'static str> {
     let n = strategies.len();
     if n < 2 {
         return Err("must have at least two strategies");
     }
 
     let mut scores = vec![0.0; n];
+    let mut wins = vec![0usize; n];
     for i in 0..n {
         for j in i + 1..n {
             let si = strategies[i];
@@ -152,10 +155,16 @@ pub fn tournament<'a, S: Strategy>(
 
             scores[i] += score_i;
             scores[j] += score_j;
+
+            if score_i > score_j {
+                wins[i] += 1;
+            } else if score_j > score_i {
+                wins[j] += 1;
+            }
         }
     }
 
-    Ok(scores)
+    Ok((scores, wins))
 }
 
 // /// A trait for selection algorithms
