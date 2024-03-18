@@ -1,18 +1,13 @@
 [package]
-name = "sotf"
+name = "sotf-python"
 version = "0.1.0"
 edition = "2021"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+[lib]
+name = "sotf_python"
+crate-type = ["cdylib"]
 
 [dependencies]
-rand = "0.8.4"
-rusqlite = "0.31.0"
-
-[lib]
-name = "sotf"
-path = "src/lib.rs"
-
-[[bin]]
-name = "sotf"
-path = "src/main.rs"
+pyo3 = "0.19.0"
+sotf = { path = "../sotf" }
